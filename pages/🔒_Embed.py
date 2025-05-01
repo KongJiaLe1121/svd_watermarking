@@ -17,7 +17,7 @@ st.title("🔒 Embed Watermark")
 input_fmt = st.radio("Input Format", ["PNG / JPG", "DICOM"], horizontal=True)
 up = (st.file_uploader("Upload Image", type=["png","jpg","jpeg"])
       if input_fmt == "PNG / JPG"
-      else st.file_uploader("Upload DICOM", type=["dcm"]))
+      else st.file_uploader("Upload DICOM", type=None))
 if not up:
     st.stop()
 
