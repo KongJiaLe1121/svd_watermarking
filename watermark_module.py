@@ -4,6 +4,7 @@ import pydicom
 from pydicom.uid import ExplicitVRLittleEndian
 import matplotlib.pyplot as plt
 from datetime import datetime
+import json
 
 # -------------------------------
 #  Utility Functions
@@ -41,6 +42,31 @@ def generate_watermark_image_2col(rows, font_scale: float = 1.0,
         y += line_h + line_gap
     return img
 
+def generate_watermark_multi_col(rows, cols=4,
+                                 font_scale=0.5, pad=5, line_gap=5):
+    """
+    Split 'rows' evenly into `cols` columns, then render side by side.
+    Each column is drawn with generate_watermark_image_2col logic.
+    """
+    # chunk rows into sublists
+    chunk = (len(rows) + cols - 1)//cols
+    sublists = [rows[i*chunk:(i+1)*chunk] for i in range(cols)]
+    # generate each column as its own image
+    imgs = [generate_watermark_image_2col(sl, font_scale, pad, line_gap)
+            for sl in sublists]
+    # pad to same height
+    H = max(im.shape[0] for im in imgs)
+    es = []
+    for im in imgs:
+        h, w = im.shape
+        if h < H:
+            buf = np.zeros((H, w), np.uint8)
+            buf[:h, :] = im
+            im = buf
+        es.append(im)
+    # concatenate horizontally
+    return np.hstack(es)
+
 # -------------------------------
 # DICOM Handling Functions
 # -------------------------------
@@ -63,32 +89,37 @@ def load_dicom_grayscale(path):
             gray = gray[0]
     return gray, ds
 
-
-def save_dicom_from_grayscale(ds, gray_img, out_path):
+def extract_all_metadata_rows(ds):
     """
-    Save a grayscale numpy array back into the provided DICOM dataset,
-    rescaling to original pixel range and enforcing uncompressed format.
+    Return a list of (key, value) tuples for every non-private, non‐PixelData element in the DICOM.
+    Dates (DA) are converted to YYYY-MM-DD.
     """
-    ds_out = ds.copy()
-    ds_out.Rows, ds_out.Columns = gray_img.shape
-    ds_out.SamplesPerPixel      = 1
-    ds_out.PhotometricInterpretation = "MONOCHROME2"
-    ds_out.BitsAllocated  = 8
-    ds_out.BitsStored     = 8
-    ds_out.HighBit        = 7
-    ds_out.PixelRepresentation = 0  # unsigned
-    if "PlanarConfiguration" in ds_out:
-        del ds_out.PlanarConfiguration
+    rows = []
+    for elem in ds:
+        # skip private or empty or huge pixel data
+        if elem.tag.is_private:
+            continue
+        if elem.keyword == "PixelData":
+            continue
+        if elem.value is None:
+            continue
 
-    # ----- write Pixel Data -----
-    ds_out.PixelData = gray_img.astype(np.uint8).tobytes()
+        key = elem.keyword or str(elem.tag)
+        val = elem.value
 
-    # ----- make it uncompressed Explicit VR LE -----
-    ds_out.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-    ds_out.is_implicit_VR = False
-    ds_out.is_little_endian = True
+        # skip sequences
+        if elem.VR == "SQ":
+            continue
 
-    ds_out.save_as(out_path)
+        # convert DICOM date (DA)
+        if elem.VR == "DA":
+            try:
+                val = datetime.strptime(val, "%Y%m%d").strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+        rows.append((key, str(val)))
+    return rows
 
 # -------------------------------
 # Watermarking Functions (Partial SVD)
@@ -117,8 +148,8 @@ def embed_watermark_svd(image, watermark, strength=0.01,
     params = {"Uw":Uw, "Vtw":Vtw, "original_S":S,
               "i1":i1, "i2":i2, "strength":strength,
               "wm_shape":watermark.shape}
-    return watermarked, params
 
+    return watermarked, params
 
 def extract_watermark_svd(wm_img, params):
     """
